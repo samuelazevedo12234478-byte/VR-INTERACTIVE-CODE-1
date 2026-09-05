@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Jogo VR 3D - Tiro com Pinça (MediaPipe)</title>
+    <!-- Motor 3D A-Frame -->
+    <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
+    <!-- Bibliotecas do MediaPipe Hands para rastreamento de mãos -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        
+        /* Câmera do celular rodando em segundo plano (invisível para o usuário) */
+        #webcam-video {
+            display: none;
+        }
+
+        /* Mira fixa no centro da tela */
+        #crosshair {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 22px;
+            height: 22px;
+            border: 2px solid rgba(255, 255, 255, 0.9);
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 999;
+            transition: transform 0.1s;
+        }
+        #crosshair.pinching {
+            transform: translate(-50%, -50%) scale(0.7);
+            border-color: #ff3333;
+            background-color: rgba(255, 0, 0, 0.3);
+        }
+        #crosshair::after {
+            content: '';
+            position: absolute;
+            top: 7px;
+            left: 7px;
+            width: 4px;
+            height: 4px;
+            background-color: red;
+            border-radius: 50%;
+        }
+
+        /* Interface de Pontuação e Status */
+        #ui-layer {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            color: #fff;
+            font-family: Arial, sans-serif;
+            font-size: 18px;
+            font-weight: bold;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+            z-index: 999;
+            pointer-events: none;
+        }
+
+        /* Indicador de Status da Mão */
+        #gesture-status {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.6);
+            color: #0ff;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+            z-index: 999;
+            pointer-events: none;
+        }
+
+        /* Tela de Fim de Jogo */
+        #game-over-screen {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.85);
+            z-index: 1000;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-family: Arial, sans-serif;
+        }
+        #game-over-screen h1 { font-size: 36px; color: #ff3333; margin-bottom: 10px; }
+        #game-over-screen p { font-size: 22px; margin-bottom: 10px; }
+        #restart-btn {
+            padding: 15px 30px;
+            font-size: 20px;
+            font-weight: bold;
+            background-color: #28a745;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Vídeo oculto usado pelo MediaPipe para ler a câmera frontal -->
+    <video id="webcam-video" playsinline></video>
+
+    <div id="crosshair"></div>
+    <div id="ui-layer">
+        PONTOS: <span id="score">0</span><br>
+        PESSOAS QUE APARECERAM: <span id="spawn-count">0</span> / 100
+    </div>
+    <div id="gesture-status">Procurando mão... Faça pinça para atirar</div>
+
+    <!-- Tela de Fim de Jogo -->
+    <div id="game-over-screen">
+        <h1>FIM DE JOGO!</h1>
+        <p>Pessoas totais que apareceram: 100</p>
+        <p>Sua pontuação final: <span id="final-score">0</span></p>
+        <button id="restart-btn" onclick="reiniciarJogo()">JOGAR DE NOVO</button>
+    </div>
+
+    <!-- Cena 3D -->
+    <a-scene>
+        <!-- Céu Azul Limpo -->
+        <a-sky color="#4A90E2"></a-sky>
+
+        <!-- Pista (Chão) -->
+        <a-plane position="0 0 0" rotation="-90 0 0" width="15" height="100" color="#333333" roughness="0.9"></a-plane>
+
+        <!-- Prédio 3D na frente do jogador -->
+        <a-entity id="building" position="0 5 -8">
+            <a-box width="6" height="12" depth="2" color="#8B5A2B" roughness="0.7"></a-box>
+            
+            <!-- Janelas (Alvos interativos) -->
+            <a-box class="window" position="-1.5 -3 1.05" width="1" height="1.2" depth="0.1" color="#87CEEB"></a-box>
+            <a-box class="window" position="1.5 -3 1.05" width="1" height="1.2" depth="0.1" color="#87CEEB"></a-box>
+            <a-box class="window" position="-1.5 0 1.05" width="1" height="1.2" depth="0.1" color="#87CEEB"></a-box>
+            <a-box class="window" position="1.5 0 1.05" width="1" height="1.2" depth="0.1" color="#87CEEB"></a-box>
+            <a-box class="window" position="-1.5 3 1.05" width="1" height="1.2" depth="0.1" color="#87CEEB"></a-box>
+            <a-box class="window" position="1.5 3 1.05" width="1" height="1.2" depth="0.1" color="#87CEEB"></a-box>
+        </a-entity>
+
+        <!-- Câmera com Giroscópio -->
+        <a-entity id="player" position="0 1.6 0">
+            <a-camera id="camera" look-controls="pointerLockEnabled: false">
+                <a-cursor raycaster="objects: .target" fuse="false" visible="false"></a-cursor>
+            </a-camera>
+        </a-entity>
+    </a-scene>
+
+    <script>
+        let score = 0;
+        let totalPessoasAparecidas = 0;
+        let jogoAtivo = true;
+        const windows = document.querySelectorAll('.window');
+        let rodadaTimeout = null;
+        let pinhouAnteriormente = false;
+
+        // Lógica do Jogo (Prédio e Aparições)
+        function proximaRodada() {
+            if (!jogoAtivo) return;
+
+            if (totalPessoasAparecidas >= 100) {
+                finalizarJogo();
+                return;
+            }
+
+            windows.forEach(w => {
+                w.setAttribute('visible', 'false');
+                w.classList.remove('target');
+                w.setAttribute('color', '#87CEEB');
+            });
+
+            let quantidadeAtivas = 1;
+            if (totalPessoasAparecidas >= 50) {
+                quantidadeAtivas = 4;
+            } else if (totalPessoasAparecidas >= 30) {
+                quantidadeAtivas = 3;
+            } else if (totalPessoasAparecidas >= 10) {
+                quantidadeAtivas = 2;
+            }
+
+            let ativas = [];
+            while (ativas.length < quantidadeAtivas && ativas.length < windows.length) {
+                let randomIndex = Math.floor(Math.random() * windows.length);
+                if (!ativas.includes(randomIndex)) {
+                    ativas.push(randomIndex);
+                }
+            }
+
+            ativas.forEach(index => {
+                windows[index].setAttribute('visible', 'true');
+                windows[index].setAttribute('color', '#FFD700');
+                windows[index].classList.add('target');
+            });
+
+            totalPessoasAparecidas += ativas.length;
+            if (totalPessoasAparecidas > 100) totalPessoasAparecidas = 100;
+            document.getElementById('spawn-count').innerText = totalPessoasAparecidas;
+
+            rodadaTimeout = setTimeout(() => {
+                proximaRodada();
+            }, 2500);
+        }
+
+        function dispararTiro() {
+            if (!jogoAtivo) return;
+
+            const cameraEl = document.querySelector('#camera');
+            const raycaster = cameraEl.components.raycaster;
+
+            if (raycaster && raycaster.intersectedEls.length > 0) {
+                const janelaAtingida = raycaster.intersectedEls[0];
+
+                if (janelaAtingida.classList.contains('target')) {
+                    score += 10;
+                    document.getElementById('score').innerText = score;
+                    janelaAtingida.setAttribute('color', '#ff3333');
+                    janelaAtingida.classList.remove('target');
+                }
+            }
+        }
+
+        function finalizarJogo() {
+            jogoAtivo = false;
+            clearTimeout(rodadaTimeout);
+            document.getElementById('final-score').innerText = score;
+            document.getElementById('game-over-screen').style.display = 'flex';
+        }
+
+        function reiniciarJogo() {
+            score = 0;
+            totalPessoasAparecidas = 0;
+            jogoAtivo = true;
+            document.getElementById('score').innerText = score;
+            document.getElementById('spawn-count').innerText = totalPessoasAparecidas;
+            document.getElementById('game-over-screen').style.display = 'none';
+            proximaRodada();
+        }
+
+        // Configuração do MediaPipe Hands para detectar o gesto de pinça
+        const videoElement = document.getElementById('webcam-video');
+        const gestureStatus = document.getElementById('gesture-status');
+        const crosshair = document.getElementById('crosshair');
+
+        function onResults(results) {
+            if (!jogoAtivo) return;
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                gestureStatus.innerText = "Mão detectada!";
+                
+                const landmarks = results.multiHandLandmarks[0];
+                // Ponto 4 = Ponta do Polegar, Ponto 8 = Ponta do Indicador
+                const polegar = landmarks[4];
+                const indicador = landmarks[8];
+
+                // Calcula a distância 3D entre a ponta do polegar e do indicador
+                const distancia = Math.sqrt(
+                    Math.pow(polegar.x - indicador.x, 2) +
+                    Math.pow(polegar.y - indicador.y, 2) +
+                    Math.pow(polegar.z - indicador.z, 2)
+                );
+
+                // Se a distância for menor que 0.05, considera que fez o gesto de pinça
+                const fazendoPinca = distancia < 0.05;
+
+                if (fazendoPinca) {
+                    crosshair.classList.add('pinching');
+                    // Dispara o tiro apenas no momento em que a pinça é iniciada (evita tiro contínuo segurando)
+                    if (!pinhouAnteriormente) {
+                        dispararTiro();
+                    }
+                    pinhouAnteriormente = true;
+                } else {
+                    crosshair.classList.remove('pinching');
+                    pinhouAnteriormente = false;
+                }
+            } else {
+                gestureStatus.innerText = "Posicione a mão na frente da câmera";
+                crosshair.classList.remove('pinching');
+                pinhouAnteriormente = false;
+            }
+        }
+
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        hands.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({ image: videoElement });
+            },
+            width: 320,
+            height: 240
+        });
+
+        // Inicia a câmera em segundo plano e o jogo
+        camera.start().then(() => {
+            proximaRodada();
+        }).catch(err => {
+            gestureStatus.innerText = "Erro ao acessar a câmera frontal";
+            console.error(err);
+        });
+
+        // Suporte a clique na tela caso queira testar manualmente no PC
+        window.addEventListener('click', dispararTiro);
+    </script>
+</body>
+</html>
+
